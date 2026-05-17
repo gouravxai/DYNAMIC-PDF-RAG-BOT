@@ -1,8 +1,7 @@
 PROJECT: DYNAMIC PDF RAG BOT (CONTEXT-AWARE DOCUMENT INTELLIGENCE)
 
 
-LIVE DEMO: 
-https:[Click Here](//dynamic-pdf-rag-bot-xsbozwiqebofdkwf8txbwk.streamlit.app/)
+LIVE DEMO: [Click Here](https://dynamic-pdf-rag-bot-xsbozwiqebofdkwf8txbwk.streamlit.app/)
 
 OVERVIEW:
 I built a Retrieval-Augmented Generation (RAG) system that allows users to 
