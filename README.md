@@ -6,6 +6,7 @@ The Problem
 General-purpose LLMs often "hallucinate" facts when they don't know the answer. I wanted to build a system where the AI is forced to stay within the boundaries of a specific document, making it useful for analyzing research papers, legal contracts, or technical manuals.
 
 How I Built It (The Architecture)
+
 Ingestion Pipeline: Used RecursiveCharacterTextSplitter to break PDFs into 500-token chunks with a 50-token overlap to maintain semantic continuity between pages.
 
 Vector Store & Retrieval:
