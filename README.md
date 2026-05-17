@@ -1,35 +1,36 @@
-# rag-pdf-qa
+Dynamic PDF RAG Bot: Context-Aware Document Intelligence
+I built a Retrieval-Augmented Generation (RAG) system that allows users to upload any PDF and have a grounded conversation with its content. Unlike standard LLMs, this bot strictly cites its sources and provides page numbers, ensuring 100% transparency and zero hallucinations.
 
-A RAG (Retrieval-Augmented Generation) system that lets you upload any PDF and ask questions about it. It extracts answers strictly from the document context and provides the exact page citations for transparency.
+The Problem
+General-purpose LLMs often "hallucinate" facts when they don't know the answer. I wanted to build a system where the AI is forced to stay within the boundaries of a specific document, making it useful for analyzing research papers, legal contracts, or technical manuals.
 
-Live Demo: [Dynamic PDF RAG Bot](https://dynamic-pdf-rag-bot-xsbozwiqebofdkwf8txbwk.streamlit.app/)
+How I Built It (The Architecture)
+Ingestion Pipeline: Used RecursiveCharacterTextSplitter to break PDFs into 500-token chunks with a 50-token overlap to maintain semantic continuity between pages.
 
-## Features
-* **Dynamic File Upload:** Users can upload any custom PDF document directly through the interface for real-time indexing.
-* **Contextual Chat Memory:** Maintains conversation history within a session to support multi-turn, follow-up questions.
-* **Strict Context Boundaries:** The LLM is restricted to answering solely based on the retrieved document segments to eliminate hallucinations.
-* **Source Citations:** Displays the specific document chunks and exact PDF page numbers used to formulate the response.
+Vector Store & Retrieval:
 
-## Architecture & Logic
-* **Document Ingestion:** The uploaded PDF is parsed and broken into semantic units using a `RecursiveCharacterTextSplitter` with a chunk size of 500 tokens and a 50-token overlap.
-* **Vector Store:** Text chunks are converted into vector embeddings using the `all-MiniLM-L6-v2` model and indexed into an in-memory `ChromaDB` store.
-* **Retrieval & Inference:** When a user submits a query, a cosine similarity search retrieves the top 5 most relevant chunks. These chunks, along with the conversation history and the query, are compiled into a custom prompt template and processed via `Llama-3.1-8b-instant` on Groq Cloud.
+Embeddings: Used HuggingFace's all-MiniLM-L6-v2 to convert text into high-dimensional vectors.
 
-## Technical Stack
-* **Language:** Python
-* **LLM Orchestration:** LangChain
-* **Vector Database:** ChromaDB
-* **Embeddings Model:** HuggingFace (`all-MiniLM-L6-v2`)
-* **Inference Engine:** ChatGroq (`llama-3.1-8b-instant`)
-* **Interface:** Streamlit
+Storage: Chunks are indexed in ChromaDB for fast similarity searches.
 
-## Challenges Faced
-* **Windows Path Escapes:** Encountered system errors during local testing due to Python treating `\U` in file paths as Unicode escape characters. Resolved by enforcing raw string literals (`r'path'`).
-* **LangChain Abstraction Deprecations:** Standard high-level components like `RetrievalQA` proved unstable across LangChain version updates. Solved this by decoupling the pipeline and manually handling the retrieval, formatting, and invocation steps.
-* **API Quota Constraints:** The initial integration with Google's Gemini free tier hit strict rate limits during iterative testing. Migrated the backend to Groq Cloud to leverage faster inference and higher token-per-minute thresholds.
-* **Context Window Optimization:** Initial trials with 3 retrieved chunks occasionally cut off multi-page tables or continuous context in dense papers. Fine-tuned the retriever parameter to `k=5` and optimized chunk spacing to prevent data loss.
+Logic: When a query is asked, the system performs a cosine similarity search to fetch the top 5 most relevant segments.
 
-## Local Setup
-1. Install dependencies:
-   ```bash
-   pip install streamlit langchain langchain-community langchain-huggingface langchain-groq chromadb pypdf python-dotenv sentence-transformers langchain-text-splitters
+Inference: Integrated Llama-3.1-8b via Groq Cloud for near-instant response generation, using a custom LangChain prompt template that includes chat history for multi-turn conversations.
+
+Challenges I Overcame
+API Rate Limiting: Initially used Gemini, but hit strict quotas during testing. Migrated the backend to Groq Cloud, which significantly improved inference speed and token limits.
+
+Context Loss: Noticed that retrieving only 3 chunks often missed data from complex tables. Fine-tuned the retriever to k=5 to ensure dense documents are fully captured.
+
+System Stability: Moved away from high-level LangChain abstractions (like RetrievalQA) that were prone to deprecation errors. Instead, I manually decoupled the retrieval and formatting steps for a more stable, production-ready pipeline.
+
+Tech Stack
+Orchestration: LangChain
+
+LLM: Llama-3.1-8b (Groq)
+
+Vector DB: ChromaDB
+
+Embeddings: HuggingFace
+
+Interface: Streamlit
