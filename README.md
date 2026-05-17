@@ -1,4 +1,5 @@
 Dynamic PDF RAG Bot: Context-Aware Document Intelligence
+
 I built a Retrieval-Augmented Generation (RAG) system that allows users to upload any PDF and have a grounded conversation with its content. Unlike standard LLMs, this bot strictly cites its sources and provides page numbers, ensuring 100% transparency and zero hallucinations.
 
 The Problem
