@@ -15,7 +15,6 @@ st.title("📄 RAG - PDF Q&A with Citations")
 def load_llm():
     return ChatGroq(model="llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
 
-@st.cache_resource
 def process_pdf(file_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
         f.write(file_bytes)
