@@ -13,7 +13,7 @@ st.title("RAG - PDF Q&A with Citations")
 
 @st.cache_resource
 def load_llm():
-    return ChatGroq(model="llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
+    return ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
 
 @st.cache_resource
 def load_embeddings():
@@ -32,7 +32,7 @@ def process_pdf(file_bytes):
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def retrieve(query, chunks, embeddings_model, k=10):
+def retrieve(query, chunks, embeddings_model, k=15):
     query_emb = np.array(embeddings_model.embed_query(query))
     chunk_texts = [c.page_content for c in chunks]
     chunk_embs = np.array(embeddings_model.embed_documents(chunk_texts))
