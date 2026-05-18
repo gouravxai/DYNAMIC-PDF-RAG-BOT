@@ -25,14 +25,14 @@ def process_pdf(file_bytes):
         path = f.name
     loader = PyPDFLoader(path)
     pages = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=30)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     chunks = splitter.split_documents(pages)
     return chunks
 
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def retrieve(query, chunks, embeddings_model, k=8):
+def retrieve(query, chunks, embeddings_model, k=10):
     query_emb = np.array(embeddings_model.embed_query(query))
     chunk_texts = [c.page_content for c in chunks]
     chunk_embs = np.array(embeddings_model.embed_documents(chunk_texts))
@@ -79,18 +79,20 @@ if uploaded_file:
         for msg in st.session_state.messages[-6:]:
             history += f"{msg['role']}: {msg['content']}\n"
 
-        docs = retrieve(query, st.session_state.chunks, embeddings_model)
+        docs = retrieve(query, st.session_state.chunks, embeddings_model, k=10)
         context = '\n\n'.join([d.page_content for d in docs])
 
-        final_prompt = f"""You are a helpful assistant. Follow these rules strictly:
+        final_prompt = f"""You are a helpful assistant who answers questions about a PDF document.
 
-1. Answer ONLY from the PDF context below. Never use chat history to form your answer.
+Rules:
+1. Answer ONLY from the PDF context below. Never use chat history to answer.
 2. Chat history is only to understand follow-up questions.
-3. If the answer is not in the PDF, say "This isn't covered in the PDF."
-4. Detect the language of the user's question and reply in the same language.
-5. Keep answers natural. Do not use phrases like "According to the context", "It is stated that", "Based on the provided text". Just answer directly.
-6. If the user is just chatting (hi, thanks etc), respond naturally.
-7. At the end add citations like: [Page 3], [Page 7]
+3. Give detailed, complete answers. If there are multiple points, list them all. Do not cut short.
+4. If the answer is truly not in the PDF, say "This isn't covered in the PDF."
+5. Always reply in English.
+6. Do not use robotic phrases like "According to the context", "It is stated that", "Based on the provided text". Just answer directly and naturally.
+7. If the user is just chatting (hi, thanks etc), respond naturally.
+8. At the end of your answer add page citations like: [Page 1], [Page 2]
 
 Chat History (for follow-up reference only):
 {history}
