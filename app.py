@@ -25,14 +25,14 @@ def process_pdf(file_bytes):
         path = f.name
     loader = PyPDFLoader(path)
     pages = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=30)
     chunks = splitter.split_documents(pages)
     return chunks
 
 def cosine_similarity(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
-def retrieve(query, chunks, embeddings_model, k=5):
+def retrieve(query, chunks, embeddings_model, k=8):
     query_emb = np.array(embeddings_model.embed_query(query))
     chunk_texts = [c.page_content for c in chunks]
     chunk_embs = np.array(embeddings_model.embed_documents(chunk_texts))
