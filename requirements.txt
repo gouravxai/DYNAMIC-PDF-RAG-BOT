@@ -1,4 +1,5 @@
 streamlit
+pypdf
 langchain
 langchain-community
 langchain-groq
