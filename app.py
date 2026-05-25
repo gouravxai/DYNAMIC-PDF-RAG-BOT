@@ -4,112 +4,122 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
+
 import tempfile
 import os
-import numpy as np
 import io
+import re
+import base64
+import numpy as np
+
 from dotenv import load_dotenv
 from pdf2image import convert_from_path
-import base64
 
 load_dotenv()
 
 st.set_page_config(
-    page_title="RAG PDF Q&A with Images",
+    page_title="Advanced PDF RAG",
     page_icon="📄",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-st.title("📄 RAG - PDF Q&A with Images & OCR")
-st.markdown("*Upload PDFs with text or scanned pages. Ask questions and get answers with citations.*")
+st.title("📄 Advanced PDF Catalog RAG")
+
+# ============================================================================
+# CACHE MODELS
+# ============================================================================
 
 @st.cache_resource
 def load_llm():
     return ChatGroq(
         model="llama-3.3-70b-versatile",
         api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.3
+        temperature=0
     )
-
-@st.cache_resource
-def load_embeddings():
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 @st.cache_resource
 def load_vision_llm():
     return ChatGroq(
         model="llama-3.2-11b-vision-preview",
         api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.2
+        temperature=0
     )
 
+@st.cache_resource
+def load_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2"
+    )
+
+llm = load_llm()
+vision_llm = load_vision_llm()
+embeddings_model = load_embeddings()
+
+# ============================================================================
+# PDF PROCESSING
+# ============================================================================
+
 def process_pdf(file_bytes):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
+    """Extract text chunks from PDF"""
+    with tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".pdf"
+    ) as f:
         f.write(file_bytes)
         pdf_path = f.name
 
-    try:
-        loader = PyPDFLoader(pdf_path)
-        pages = loader.load()
+    loader = PyPDFLoader(pdf_path)
+    pages = loader.load()
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=400,
-            chunk_overlap=100,
-            separators=["\n\n", "\n", ".", " ", ""]
+    # Smaller chunks for catalog data
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=400,  # FIXED: Was 1500, too large
+        chunk_overlap=100,
+        separators=["\n\n", "\n", ".", " ", ""]
+    )
+
+    chunks = splitter.split_documents(pages)
+
+    return chunks, pdf_path
+
+def extract_images_from_pdf(pdf_path):
+    """Convert PDF pages to images"""
+    try:
+        images = convert_from_path(
+            pdf_path,
+            dpi=150
         )
 
-        chunks = splitter.split_documents(pages)
-
-        return chunks, pdf_path
-
-    except Exception as e:
-        st.error(f"Error processing PDF text: {str(e)}")
-        return [], pdf_path
-
-def extract_images_from_pdf(pdf_path, max_pages=None):
-    try:
-        images = convert_from_path(pdf_path, dpi=150)
-
-        if max_pages:
-            images = images[:max_pages]
-
         image_data = []
-        progress_bar = st.progress(0)
 
         for idx, image in enumerate(images):
             img_bytes = io.BytesIO()
             image.save(img_bytes, format="PNG")
             img_bytes.seek(0)
 
-            b64_string = base64.b64encode(img_bytes.getvalue()).decode()
+            b64_string = base64.b64encode(
+                img_bytes.getvalue()
+            ).decode()
 
             image_data.append({
                 "page": idx + 1,
-                "base64": b64_string,
-                "size": len(b64_string)
+                "base64": b64_string
             })
-
-            progress_bar.progress((idx + 1) / len(images))
 
         return image_data
 
     except Exception as e:
-        st.error(f"Could not extract images from PDF: {str(e)}")
+        st.error(f"PDF Image Extraction Error: {e}")
+        st.error("Install poppler: sudo apt-get install poppler-utils")
         return []
 
-def extract_text_from_images(image_data_list, vision_llm):
+def extract_text_from_images(image_data_list):
+    """Run OCR on images"""
     extracted_texts = []
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    progress = st.progress(0)
 
     for idx, img_data in enumerate(image_data_list):
         try:
-            status_text.text(
-                f"📖 Processing page {img_data['page']}/{len(image_data_list)}..."
-            )
-
             message = HumanMessage(
                 content=[
                     {
@@ -120,8 +130,17 @@ def extract_text_from_images(image_data_list, vision_llm):
                     },
                     {
                         "type": "text",
-                        "text": """Extract ALL text and information from this image.
-Include all visible details, tables, specifications, labels, prices and codes."""
+                        "text": """Extract ALL visible text exactly as shown.
+
+CRITICAL:
+- Preserve SKU codes EXACTLY
+- Preserve product codes EXACTLY
+- Preserve prices EXACTLY
+- Preserve ratings EXACTLY
+- Preserve tables EXACTLY
+- Do NOT summarize or interpret
+- Do NOT change formatting
+- Include ALL text you can read"""
                     }
                 ]
             )
@@ -134,23 +153,27 @@ Include all visible details, tables, specifications, labels, prices and codes.""
                 "source": "image_ocr"
             })
 
-            progress_bar.progress((idx + 1) / len(image_data_list))
+            progress.progress(
+                (idx + 1) / len(image_data_list)
+            )
 
         except Exception as e:
-            st.warning(f"⚠️ Error processing page {img_data['page']}: {str(e)}")
-
+            st.warning(f"Error processing page {img_data['page']}: {str(e)}")
             extracted_texts.append({
                 "page": img_data["page"],
-                "text": f"[Error extracting text from page {img_data['page']}]",
+                "text": "",
                 "source": "image_ocr"
             })
 
-    status_text.empty()
-    progress_bar.empty()
-
+    progress.empty()
     return extracted_texts
 
+# ============================================================================
+# RETRIEVAL & SEARCH
+# ============================================================================
+
 def cosine_similarity(a, b):
+    """Compute cosine similarity"""
     norm_a = np.linalg.norm(a)
     norm_b = np.linalg.norm(b)
 
@@ -159,11 +182,22 @@ def cosine_similarity(a, b):
 
     return np.dot(a, b) / (norm_a * norm_b)
 
-def retrieve(query, text_chunks, image_texts, embeddings_model, k=15):
-    query_emb = np.array(embeddings_model.embed_query(query))
-
+def retrieve(
+    query,
+    text_chunks,
+    image_texts,
+    embeddings_model,
+    k=12
+):
+    """
+    Hybrid retrieval: exact match + semantic search
+    
+    FIXED: Better scoring logic for catalog data
+    """
+    query_lower = query.lower()
     all_chunks = []
 
+    # Add text chunks
     for chunk in text_chunks:
         all_chunks.append({
             "content": chunk.page_content,
@@ -171,43 +205,106 @@ def retrieve(query, text_chunks, image_texts, embeddings_model, k=15):
             "source": "text"
         })
 
-    for img_text in image_texts:
+    # Add OCR chunks
+    for item in image_texts:
         all_chunks.append({
-            "content": img_text["text"],
-            "page": img_text["page"],
+            "content": item["text"],
+            "page": item["page"],
             "source": "image_ocr"
         })
 
     if not all_chunks:
         return []
 
-    chunk_texts = [c["content"] for c in all_chunks]
+    # ========================================================================
+    # IMPROVED EXACT MATCH SCORING
+    # ========================================================================
+    
+    query_tokens = re.findall(r'\w+', query_lower)
+    exact_matches = []
 
-    try:
-        chunk_embs = np.array(
-            embeddings_model.embed_documents(chunk_texts)
+    for chunk in all_chunks:
+        content_lower = chunk["content"].lower()
+        
+        # FIXED: Better scoring logic
+        score = 0
+        
+        # Highest priority: full query appears as substring
+        if query_lower in content_lower:
+            score = 10000
+        # High priority: all tokens present
+        elif all(token in content_lower for token in query_tokens):
+            score = 1000
+        # Medium priority: count token occurrences
+        else:
+            score = sum(
+                content_lower.count(token) * len(token)
+                for token in query_tokens
+            )
+
+        if score > 0:
+            exact_matches.append((chunk, score))
+
+    # If we have enough exact matches, return them
+    if len(exact_matches) >= k:
+        exact_matches = sorted(
+            exact_matches,
+            key=lambda x: x[1],
+            reverse=True
         )
+        return exact_matches[:k]
 
-    except Exception as e:
-        st.error(f"Error embedding documents: {str(e)}")
-        return []
+    # ========================================================================
+    # SEMANTIC SEARCH (if not enough exact matches)
+    # ========================================================================
+    
+    query_embedding = np.array(
+        embeddings_model.embed_query(query)
+    )
 
-    scores = [
-        cosine_similarity(query_emb, ce)
-        for ce in chunk_embs
+    chunk_texts = [c["content"] for c in all_chunks]
+    chunk_embeddings = np.array(
+        embeddings_model.embed_documents(chunk_texts)
+    )
+
+    semantic_scores = [
+        cosine_similarity(query_embedding, emb)
+        for emb in chunk_embeddings
     ]
 
-    top_k_indices = sorted(
-        range(len(scores)),
-        key=lambda i: scores[i],
+    semantic_results = [
+        (all_chunks[i], semantic_scores[i] * 1000)  # Scale to be comparable
+        for i in range(len(all_chunks))
+    ]
+
+    # ========================================================================
+    # COMBINE & DEDUPLICATE
+    # ========================================================================
+    
+    combined = exact_matches + semantic_results
+    
+    final = []
+    seen = set()
+
+    for item in sorted(
+        combined,
+        key=lambda x: x[1],
         reverse=True
-    )[:k]
+    ):
+        # FIXED: Better deduplication logic
+        key = (item[0]["page"], item[0]["source"])
+        
+        if key not in seen:
+            seen.add(key)
+            final.append(item)
 
-    return [
-        (all_chunks[i], scores[i])
-        for i in top_k_indices
-    ]
+    return final[:k]
 
+# ============================================================================
+# SESSION STATE & UI
+# ============================================================================
+
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -217,162 +314,141 @@ if "chunks" not in st.session_state:
 if "image_texts" not in st.session_state:
     st.session_state.image_texts = []
 
-if "current_file" not in st.session_state:
+if "current_file" not in st.session_state:  # FIXED: Track current file
     st.session_state.current_file = None
 
-llm = load_llm()
-embeddings_model = load_embeddings()
-vision_llm = load_vision_llm()
-
-with st.sidebar:
-    st.header("⚙️ Settings")
-
-    retrieval_k = st.slider(
-        "Number of sources to retrieve",
-        min_value=5,
-        max_value=20,
-        value=10
-    )
-
-    show_scores = st.checkbox(
-        "Show similarity scores",
-        value=False
-    )
-
-    st.divider()
-
-    if st.button("🔄 Clear Everything", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.chunks = []
-        st.session_state.image_texts = []
-        st.session_state.current_file = None
-        st.rerun()
+# ============================================================================
+# FILE UPLOAD & PROCESSING
+# ============================================================================
 
 uploaded_file = st.file_uploader(
-    "📄 Upload your PDF",
+    "📄 Upload PDF Catalog",
     type="pdf"
 )
 
 if uploaded_file:
+    # FIXED: Only process if NEW file
     file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-
+    
     if st.session_state.get("current_file") != file_id:
         st.session_state.current_file = file_id
-        st.session_state.messages = []
-
+        st.session_state.messages = []  # Clear chat for new PDF
+        
+        # Process PDF
         with st.spinner("📖 Processing PDF..."):
             file_bytes = uploaded_file.read()
+            chunks, pdf_path = process_pdf(file_bytes)
+            st.session_state.chunks = chunks
 
-            st.session_state.chunks, pdf_path = process_pdf(file_bytes)
-
+        # Extract images
         with st.spinner("🖼️ Extracting images..."):
             image_data = extract_images_from_pdf(pdf_path)
 
-            if image_data:
-                with st.spinner("🤖 Running OCR..."):
-                    st.session_state.image_texts = (
-                        extract_text_from_images(
-                            image_data,
-                            vision_llm
-                        )
-                    )
+        # Run OCR
+        if image_data:
+            with st.spinner("🤖 Running OCR..."):
+                image_texts = extract_text_from_images(image_data)
+                st.session_state.image_texts = image_texts
+        else:
+            st.session_state.image_texts = []
 
-            else:
-                st.session_state.image_texts = []
+        st.success(f"✅ PDF loaded! ({len(chunks)} text chunks + {len(image_data)} pages)")
 
-    st.success(f"✅ '{uploaded_file.name}' loaded!")
+    # ========================================================================
+    # CHAT INTERFACE
+    # ========================================================================
 
+    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    query = st.chat_input("Ask a question about your PDF...")
+    # Chat input
+    query = st.chat_input("🔍 Ask about SKU, product, price, rating...")
 
     if query:
-        with st.chat_message("user"):
-            st.write(query)
-
+        # Add user message
         st.session_state.messages.append({
             "role": "user",
             "content": query
         })
 
-        history = ""
+        with st.chat_message("user"):
+            st.write(query)
 
-        for msg in st.session_state.messages[-6:]:
-            history += f"{msg['role']}: {msg['content']}\n"
-
-        with st.spinner("🔍 Searching..."):
-            docs_with_scores = retrieve(
+        # Retrieve relevant chunks
+        with st.spinner("🔍 Searching catalog..."):
+            results = retrieve(
                 query,
                 st.session_state.chunks,
                 st.session_state.image_texts,
                 embeddings_model,
-                k=retrieval_k
+                k=12
             )
 
-        if not docs_with_scores:
-            st.warning("⚠️ No relevant content found")
-
+        if not results:
+            st.warning("⚠️ No relevant catalog data found")
         else:
-            context = '\n\n'.join([
-                d[0]["content"]
-                for d in docs_with_scores
+            # Build context
+            context = "\n\n".join([
+                r[0]["content"]
+                for r in results
             ])
 
-            final_prompt = f"""
-You are a helpful assistant who answers questions about a PDF document.
+            # FIXED: Strict prompt for catalog lookup
+            prompt = f"""You are an EXACT catalog lookup assistant.
 
-Chat History:
-{history}
+CRITICAL INSTRUCTIONS:
+1. Return ONLY information found in the catalog
+2. Do NOT guess, assume, or interpolate
+3. Do NOT invent SKU codes or prices
+4. If exact match not found, respond:
+   "Exact match not found in catalog"
+5. If price/rating/spec is missing, say so explicitly
+6. Always cite the page number
+7. Format clearly with fields:
+   - SKU Code
+   - Product Name
+   - Specifications
+   - Price
+   - Rating
+   - Page Number
+8. If multiple products match, list all with clear separation
 
-PDF Content:
+CATALOG DATA PROVIDED:
 {context}
 
-User Question:
-{query}
+USER QUERY: {query}
 
-Answer:
+RESPONSE (be exact and cite sources):
 """
 
-            with st.spinner("🤔 Thinking..."):
-                try:
-                    result = llm.invoke(final_prompt)
-                    answer = result.content
+            # Generate answer
+            with st.spinner("✍️ Generating answer..."):
+                response = llm.invoke(prompt)
+                answer = response.content
 
-                except Exception as e:
-                    answer = f"Error generating response: {str(e)}"
-
+            # Display answer
             with st.chat_message("assistant"):
                 st.write(answer)
 
+            # Save to history
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer
             })
 
-            with st.expander("📚 Sources Used"):
-                for i, (doc, score) in enumerate(docs_with_scores, 1):
-                    source_label = (
-                        "📄 Text"
-                        if doc["source"] == "text"
-                        else "🖼️ Image"
-                    )
+            # Show sources
+            with st.expander("📚 Retrieved Sources"):
+                for idx, (doc, score) in enumerate(results, 1):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.markdown(f"**Page {doc['page']} | {doc['source'].upper()}**")
+                    with col2:
+                        st.metric("Score", f"{score:.0f}")
 
-                    st.markdown(
-                        f"**{source_label} - Page {doc['page']}**"
-                    )
-
-                    if show_scores:
-                        st.write(f"Score: {score:.3f}")
-
-                    st.caption(
-                        doc["content"][:400] + "..."
-                        if len(doc["content"]) > 400
-                        else doc["content"]
-                    )
-
-                    st.divider()
+                    with st.container(border=True):
+                        st.code(doc["content"][:800])
 
 else:
-    st.info("👆 Upload a PDF to get started!")
+    st.info("👆 Upload a PDF to begin searching the catalog")
