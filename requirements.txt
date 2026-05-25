@@ -9,3 +9,4 @@ streamlit
 python-dotenv
 sentence-transformers
 pdf2image
+poppler-utils
