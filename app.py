@@ -4,10 +4,8 @@ import os
 import io
 import re
 import base64
-import numpy as np
 from dotenv import load_dotenv
 
-# PDF & LangChain
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -17,11 +15,9 @@ from pdf2image import convert_from_path
 
 load_dotenv()
 
-# --- Page Config ---
 st.set_page_config(page_title="Advanced PDF RAG", page_icon="📄", layout="wide")
 st.title("📄 Advanced PDF Catalog RAG")
 
-# --- Model Loading (Cached) ---
 @st.cache_resource
 def load_models():
     llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0)
@@ -34,15 +30,12 @@ try:
 except Exception as e:
     st.error(f"Error connecting to Groq: {e}. Check your API Key.")
 
-# --- Processing Logic ---
 def process_pdf_content(uploaded_file):
-    """Saves uploaded file to temp path and processes text/images"""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
     try:
-        # 1. Extract Text Chunks
         loader = PyPDFLoader(tmp_path)
         pages = loader.load()
         splitter = RecursiveCharacterTextSplitter(
@@ -52,7 +45,6 @@ def process_pdf_content(uploaded_file):
         )
         text_chunks = splitter.split_documents(pages)
 
-        # 2. Extract Images for OCR
         images = convert_from_path(tmp_path, dpi=150)
         image_data = []
         for i, img in enumerate(images):
@@ -67,7 +59,6 @@ def process_pdf_content(uploaded_file):
             os.remove(tmp_path)
 
 def run_vision_ocr(image_data_list):
-    """Converts images to text using Vision LLM"""
     ocr_results = []
     bar = st.progress(0, text="Analyzing catalog pages...")
     
@@ -86,35 +77,72 @@ def run_vision_ocr(image_data_list):
     bar.empty()
     return ocr_results
 
-def hybrid_retrieve(query, text_chunks, ocr_chunks, k=8):
-    """Simple but effective hybrid retrieval"""
+def hybrid_retrieve(query, text_chunks, ocr_chunks, k=10):
     all_docs = []
     for c in text_chunks:
         all_docs.append({"content": c.page_content, "page": c.metadata.get("page", 0) + 1, "source": "Text"})
     all_docs.extend(ocr_chunks)
 
-    # 1. Keyword Scoring
-    query_tokens = re.findall(r'\w+', query.lower())
+    sku_patterns = re.findall(r'\b\d{6}\b|\b[A-Z]{2,}[\dA-Z\-]{4,}\b', query.upper())
+    
     scored_docs = []
     for doc in all_docs:
-        content = doc["content"].lower()
-        score = sum(2.0 for t in query_tokens if t in content) # Basic keyword match
-        if query.lower() in content: score += 10.0 # Phrase match
+        content = doc["content"]
+        content_upper = content.upper()
+        score = 0
+        
+        for sku in sku_patterns:
+            if sku in content_upper:
+                score += 50.0
+        
+        query_tokens = re.findall(r'\w+', query.lower())
+        score += sum(2.0 for t in query_tokens if t.lower() in content.lower())
+        
+        if query.lower() in content.lower():
+            score += 10.0
+        
         scored_docs.append((doc, score))
 
-    # 2. Sort and Deduplicate
     scored_docs.sort(key=lambda x: x[1], reverse=True)
-    
-    # Take top K results that actually have a score > 0
     results = [d for d in scored_docs if d[1] > 0][:k]
     
-    # If no keyword matches, just return top snippets (fallback)
-    if not results:
-        results = scored_docs[:3]
-        
     return results
 
-# --- UI Layout ---
+def verify_sku_exists(sku_code, context_text):
+    sku_upper = sku_code.upper()
+    context_upper = context_text.upper()
+    return sku_upper in context_upper
+
+def extract_exact_data(sku_code, context_text):
+    prompt = f"""Extract ONLY the exact price and product details for SKU '{sku_code}' from the catalog text below.
+
+If SKU '{sku_code}' is NOT found, respond with: SKU_NOT_FOUND
+
+If found, respond ONLY with:
+SKU: {sku_code}
+Price: [exact price in INR]
+Description: [product description]
+Source: [exact line from catalog]
+
+Catalog Text:
+{context_text}"""
+    
+    response = llm.invoke(prompt)
+    return response.content
+
+def answer_general_query(query, context_text):
+    prompt = f"""Answer using ONLY the catalog data provided below.
+If information is not in the catalog, say "Not found in catalog".
+Be precise and report only what exists in the source material.
+
+Context:
+{context_text}
+
+Query: {query}"""
+    
+    response = llm.invoke(prompt)
+    return response.content
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "catalog_data" not in st.session_state:
@@ -130,7 +158,6 @@ with st.sidebar:
             st.session_state.catalog_data = {"text": text_chunks, "ocr": ocr_chunks}
             st.success("Catalog indexed!")
 
-# --- Chat Interface ---
 if st.session_state.catalog_data:
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
@@ -141,32 +168,39 @@ if st.session_state.catalog_data:
         with st.chat_message("user"):
             st.markdown(query)
 
-        # Retrieval
         hits = hybrid_retrieve(
             query, 
             st.session_state.catalog_data["text"], 
-            st.session_state.catalog_data["ocr"]
+            st.session_state.catalog_data["ocr"],
+            k=10
         )
         
-        context = "\n---\n".join([f"Source: Page {d[0]['page']}\n{d[0]['content']}" for d in hits])
-        
-        prompt = f"""Use the following catalog excerpts to answer. 
-        If the SKU or product is not listed, say 'Not found in catalog'.
-        Format as a clean list or table.
-        
-        Context:
-        {context}
-        
-        User Query: {query}"""
+        if not hits:
+            response_text = "❌ No matching SKU or product found in catalog. Please check the SKU code and try again."
+        else:
+            context = "\n---\n".join([d[0]['content'] for d in hits])
+            
+            sku_match = re.search(r'\b\d{6}\b|\b[A-Z]{2,}[\dA-Z\-]{4,}\b', query.upper())
+            
+            if sku_match:
+                sku_code = sku_match.group()
+                if verify_sku_exists(sku_code, context):
+                    response_text = extract_exact_data(sku_code, context)
+                else:
+                    response_text = f"❌ SKU '{sku_code}' not found in the catalog. Please verify the code."
+            else:
+                response_text = answer_general_query(query, context)
 
         with st.chat_message("assistant"):
-            response = llm.invoke(prompt)
-            st.markdown(response.content)
-            with st.expander("View Sources"):
-                for doc, score in hits:
-                    st.write(f"**Page {doc['page']}** (Score: {score})")
-                    st.code(doc['content'][:300] + "...")
+            st.markdown(response_text)
+            with st.expander("📋 View Retrieved Sources"):
+                if hits:
+                    for i, (doc, score) in enumerate(hits, 1):
+                        st.write(f"**Source {i}** - Page {doc['page']} (Score: {score:.1f})")
+                        st.code(doc['content'][:400] + "..." if len(doc['content']) > 400 else doc['content'])
+                else:
+                    st.write("No sources retrieved.")
         
-        st.session_state.messages.append({"role": "assistant", "content": response.content})
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
 else:
     st.info("Please upload and process a PDF catalog in the sidebar to start.")
